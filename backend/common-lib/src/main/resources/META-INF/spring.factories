@@ -1,0 +1,2 @@
+org.springframework.boot.env.EnvironmentPostProcessor=\
+  com.infy.travelease.common.config.ProductionSafetyEnvironmentPostProcessor

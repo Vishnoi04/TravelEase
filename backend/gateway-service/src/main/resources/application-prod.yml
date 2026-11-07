@@ -1,0 +1,19 @@
+# Production profile (SPRING_PROFILES_ACTIVE=prod). The gateway holds no secrets or database;
+# route targets and CORS origins come from the environment (see docker-compose.yml).
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+logging:
+  level:
+    root: INFO
+    com.infy.travelease: INFO
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never

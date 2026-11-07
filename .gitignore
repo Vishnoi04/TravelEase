@@ -1,0 +1,17 @@
+# Local secrets and environment files — never commit real credentials.
+.env
+.env.*
+!.env.example
+
+# Backend build output and local document storage
+backend/**/target/
+backend/**/document-storage/
+document-storage/
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+
+# OS / editor
+.DS_Store
+.idea/

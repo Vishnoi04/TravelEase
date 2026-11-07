@@ -1,0 +1,169 @@
+package com.infy.travelease.admin.controller;
+
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import java.util.Optional;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+
+import com.infy.travelease.admin.config.SecurityConfig;
+import com.infy.travelease.admin.dto.LoginRequest;
+import com.infy.travelease.admin.dto.LoginResponse;
+import com.infy.travelease.admin.exception.GlobalExceptionHandler;
+import com.infy.travelease.admin.service.EmployeeManagerMappingAdminService;
+import com.infy.travelease.admin.service.EmployeeManagerRoutingService;
+import com.infy.travelease.admin.service.ExpenseCategoryService;
+import com.infy.travelease.admin.service.PolicyConfigService;
+import com.infy.travelease.admin.service.AuthenticationService;
+import com.infy.travelease.admin.service.TravelRequestPolicyService;
+import com.infy.travelease.admin.service.UserAdminService;
+
+@WebMvcTest(controllers = AuthenticationController.class)
+@Import({SecurityConfig.class, GlobalExceptionHandler.class})
+@TestPropertySource(properties = "server.servlet.context-path=")
+class AuthenticationControllerTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @MockBean
+    private AuthenticationService authenticationService;
+
+    @MockBean
+    private UserAdminService userAdminService;
+
+    @MockBean
+    private EmployeeManagerMappingAdminService employeeManagerMappingAdminService;
+
+    @MockBean
+    private EmployeeManagerRoutingService employeeManagerRoutingService;
+
+    @MockBean
+    private ExpenseCategoryService expenseCategoryService;
+
+    @MockBean
+    private PolicyConfigService policyConfigService;
+
+    @MockBean
+    private TravelRequestPolicyService travelRequestPolicyService;
+
+    @Test
+    void allowsUnauthenticatedLoginAndReturnsIssuedToken() throws Exception {
+        when(authenticationService.login(new LoginRequest("user@infy.com", "password")))
+                .thenReturn(Optional.of(new LoginResponse("signed.jwt.token")));
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType("application/json")
+                        .content("""
+                                {"username":"user@infy.com","password":"password"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(content().json("""
+                        {"token":"signed.jwt.token"}
+                        """));
+
+        verify(authenticationService).login(new LoginRequest("user@infy.com", "password"));
+    }
+
+    @Test
+    void returns401ForInvalidCredentials() throws Exception {
+        when(authenticationService.login(new LoginRequest("user@infy.com", "wrong")))
+                .thenReturn(Optional.empty());
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType("application/json")
+                        .content("""
+                                {"username":"user@infy.com","password":"wrong"}
+                                """))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void returns400WhenCredentialsAreMissing() throws Exception {
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType("application/json")
+                        .content("""
+                                {"username":"","password":""}
+                                """))
+                .andExpect(status().isBadRequest());
+    }
+
+    // ---- #14: brute-force protection, forced password change, password endpoints ----
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.infy.travelease.admin.service.PasswordManagementService passwordManagementService;
+
+    @Test
+    void locksOutAfterRepeatedFailuresWithA429EvenForUnknownUsers() throws Exception {
+        LoginRequest guess = new LoginRequest("lockout-target@infy.com", "guess");
+        when(authenticationService.login(guess)).thenReturn(Optional.empty());
+        String body = """
+                {"username":"lockout-target@infy.com","password":"guess"}
+                """;
+        for (int i = 0; i < 5; i++) {
+            mockMvc.perform(post("/api/auth/login").contentType("application/json").content(body))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.message").value("Invalid username or password"));
+        }
+
+        mockMvc.perform(post("/api/auth/login").contentType("application/json").content(body))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.error").value("TOO_MANY_REQUESTS"));
+        // the locked attempt never reached the credential check
+        verify(authenticationService, org.mockito.Mockito.times(5)).login(guess);
+    }
+
+    @Test
+    void correctPasswordWithPendingResetAnswers403PasswordChangeRequired() throws Exception {
+        when(authenticationService.login(new LoginRequest("reset-user@infy.com", "Temp-pass-123")))
+                .thenThrow(new com.infy.travelease.admin.security.PasswordChangeRequiredException());
+
+        mockMvc.perform(post("/api/auth/login").contentType("application/json").content("""
+                        {"username":"reset-user@infy.com","password":"Temp-pass-123"}
+                        """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("PASSWORD_CHANGE_REQUIRED"));
+    }
+
+    @Test
+    void changePasswordRequiresAuthenticationAndUsesTheTokenSubject() throws Exception {
+        String body = """
+                {"currentPassword":"Current-pass-2026","newPassword":"Brand-new-pass-2027"}
+                """;
+        mockMvc.perform(post("/api/auth/change-password").contentType("application/json").content(body))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(post("/api/auth/change-password")
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors
+                                .jwt().jwt(jwt -> jwt.subject("7")))
+                        .contentType("application/json").content(body))
+                .andExpect(status().isNoContent());
+        verify(passwordManagementService).changePassword(7L, "Current-pass-2026", "Brand-new-pass-2027");
+    }
+
+    @Test
+    void completingAForcedChangeIsPublicButValidated() throws Exception {
+        mockMvc.perform(post("/api/auth/complete-password-change").contentType("application/json").content("""
+                        {"username":"reset-user@infy.com","temporaryPassword":"Temp-pass-123","newPassword":"Brand-new-pass-2027"}
+                        """))
+                .andExpect(status().isNoContent());
+        verify(passwordManagementService).completeRequiredChange("reset-user@infy.com", "Temp-pass-123",
+                "Brand-new-pass-2027");
+
+        mockMvc.perform(post("/api/auth/complete-password-change").contentType("application/json").content("""
+                        {"username":"reset-user@infy.com","temporaryPassword":"","newPassword":""}
+                        """))
+                .andExpect(status().isBadRequest());
+    }
+}
